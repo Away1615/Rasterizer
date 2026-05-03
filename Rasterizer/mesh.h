@@ -1,0 +1,389 @@
+﻿#pragma once
+
+#include <vector>
+#include <iostream>
+#include "vec4.h"
+#include "matrix.h"
+#include "colour.h"
+
+#include "AVX_SOA.h"
+#include "Macros.h"
+
+#if OPT_FRUSTUM_CULLING
+#include <limits>
+#include <algorithm>
+#include <cmath>
+#endif
+
+
+// Represents a vertex in a 3D mesh, including its position, normal, and color
+struct Vertex {
+    vec4 p;         // Position of the vertex in 3D space
+    vec4 normal;    // Normal vector for the vertex
+    colour rgb;     // Color of the vertex
+};
+
+// Stores indices of vertices that form a triangle in a mesh
+struct triIndices {
+    unsigned int v[3]; // Indices into the vertex array
+
+    // Constructor to initialize the indices of a triangle
+    triIndices(unsigned int v1, unsigned int v2, unsigned int v3) {
+        v[0] = v1;
+        v[1] = v2;
+        v[2] = v3;
+    }
+};
+
+// Class representing a 3D mesh made up of vertices and triangles
+class Mesh {
+public:
+    colour col;       // Uniform color for the mesh
+    float kd;         // Diffuse reflection coefficient
+    float ka;         // Ambient reflection coefficient
+    matrix world;     // Transformation matrix for the mesh
+    std::vector<Vertex> vertices;       // List of vertices in the mesh
+    std::vector<triIndices> triangles;  // List of triangles in the mesh
+
+#if OPT_AVX_SIMD
+    VertexSOA verticesSOA;
+#endif
+
+#if OPT_FRUSTUM_CULLING
+    void getBoundsSphere(vec4& center, float& radius) const {
+        if (boundsDirty) {
+            computeBounds();
+        }
+        center = boundsCenter;
+        radius = boundsRadius;
+    }
+#endif
+
+    // Set the uniform color and reflection coefficients for the mesh
+    // Input Variables:
+    // - _c: Uniform color
+    // - _ka: Ambient reflection coefficient
+    // - _kd: Diffuse reflection coefficient
+    void setColour(colour _c, float _ka, float _kd) {
+        col = _c;
+        ka = _ka;
+        kd = _kd;
+    }
+
+    // Default constructor initializes default color and reflection coefficients
+    Mesh() {
+        col.set(1.0f, 1.0f, 1.0f);
+        ka = kd = 0.75f;
+
+#if OPT_FRUSTUM_CULLING
+        boundsDirty = true;
+#endif
+    }
+
+    // Add a vertex and its normal to the mesh
+    // Input Variables:
+    // - vertex: Position of the vertex
+    // - normal: Normal vector for the vertex
+    void addVertex(const vec4& vertex, const vec4& normal) {
+#if OPT_AVX_SIMD
+        verticesSOA.p.x.push_back(vertex[0]);
+        verticesSOA.p.y.push_back(vertex[1]);
+        verticesSOA.p.z.push_back(vertex[2]);
+        verticesSOA.p.w.push_back(vertex[3]);
+        verticesSOA.n.x.push_back(normal[0]);
+        verticesSOA.n.y.push_back(normal[1]);
+        verticesSOA.n.z.push_back(normal[2]);
+        verticesSOA.n.w.push_back(0);
+        verticesSOA.c.r.push_back(col[colour::Colour::RED]);
+        verticesSOA.c.g.push_back(col[colour::Colour::GREEN]);
+		verticesSOA.c.b.push_back(col[colour::Colour::BLUE]);
+#else
+        Vertex v = { vertex, normal, col };
+        vertices.push_back(v);
+#endif
+
+#if OPT_FRUSTUM_CULLING
+        boundsDirty = true;
+#endif
+    }
+
+    // Add a triangle to the mesh
+    // Input Variables:
+    // - v1, v2, v3: Indices of the vertices forming the triangle
+    void addTriangle(int v1, int v2, int v3) {
+        triangles.emplace_back(v1, v2, v3);
+    }
+
+#if OPT_VERTEX_CACHE && !OPT_AVX_SIMD
+    void preProcessVertexCache(matrix& p, float w, float h, std::vector<Vertex>& vcache) {
+        vcache.resize(vertices.size());
+        const float halfW = 0.5f * w;
+        const float halfH = 0.5f * h;
+
+        for (unsigned int i = 0; i < vertices.size(); ++i) {
+            Vertex out;
+            out.p = p * vertices[i].p;
+            out.p.divideW();
+            out.normal = world * vertices[i].normal;
+            out.normal.normalise();
+
+            // Map NDC -> screen
+            out.p[0] = (out.p[0] + 1.f) * halfW;
+            out.p[1] = h - (out.p[1] + 1.f) * halfH;
+
+            out.rgb = vertices[i].rgb;
+            vcache[i] = out;
+        }
+    }
+#elif OPT_VERTEX_CACHE && OPT_AVX_SIMD
+    void preProcessVertexCache(matrix& p, float w, float h, VertexSOA& vcache) {
+        int size = verticesSOA.size();
+        vcache.resize(size);
+
+        const float halfW = 0.5f * w;
+        const float halfH = 0.5f * h;
+
+		// Clip Space Transform
+        avx2::mat4_mul_vec4(p.data(), verticesSOA.p, 0, size, vcache.p);
+
+		// Normal Transform
+        avx2::mat4_mul_vec4(world.data(), verticesSOA.n, 0, size, vcache.n);
+		avx2::normalize3(vcache.n, 0, size);
+
+		// Perspective Divide & Screen Mapping
+		avx2::divideW_and_ScreenMapping(vcache.p, 0, size, halfW, halfH, h);
+
+        vcache.c = verticesSOA.c;
+    }
+#endif
+
+    // Display the vertices and triangles of the mesh
+    void display() const {
+        std::cout << "Vertices and Normals:\n";
+        for (size_t i = 0; i < vertices.size(); ++i) {
+            std::cout << i << ": Vertex (" << vertices[i].p[0] << ", " << vertices[i].p[1] << ", " << vertices[i].p[2] << ", " << vertices[i].p[3] << ")"
+                << " Normal (" << vertices[i].normal[0] << ", " << vertices[i].normal[1] << ", " << vertices[i].normal[2] << ", " << vertices[i].normal[3] << ")\n";
+        }
+
+        std::cout << "\nTriangles:\n";
+        for (const auto& t : triangles) {
+            std::cout << "(" << t.v[0] << ", " << t.v[1] << ", " << t.v[2] << ")\n";
+        }
+    }
+
+    // Create a rectangle mesh given two opposite corners
+    // Input Variables:
+    // - x1, y1: Coordinates of one corner
+    // - x2, y2: Coordinates of the opposite corner
+    // Returns a Mesh object representing the rectangle
+    static Mesh makeRectangle(float x1, float y1, float x2, float y2) {
+        Mesh mesh;
+        mesh.vertices.clear();
+        mesh.triangles.clear();
+
+        // Define the four corners of the rectangle
+        vec4 v1(x1, y1, 0);
+        vec4 v2(x2, y1, 0);
+        vec4 v3(x2, y2, 0);
+        vec4 v4(x1, y2, 0);
+
+        // Calculate the normal vector using the cross product of two edges
+        vec4 edge1 = v2 - v1;
+        vec4 edge2 = v4 - v1;
+        vec4 normal = vec4::cross(edge1, edge2);
+        normal.normalise();
+
+        // Add vertices with the calculated normal
+        mesh.addVertex(v1, normal);
+        mesh.addVertex(v2, normal);
+        mesh.addVertex(v3, normal);
+        mesh.addVertex(v4, normal);
+
+        // Add two triangles forming the rectangle
+        mesh.addTriangle(0, 2, 1);
+        mesh.addTriangle(0, 3, 2);
+
+        return mesh;
+    }
+
+    // Generate a cube mesh
+    // Input Variables:
+    // - size: Length of one side of the cube
+    // Returns a Mesh object representing the cube
+    static Mesh makeCube(float size) {
+        Mesh mesh;
+        float halfSize = size / 2.0f;
+
+        // Define cube vertices (8 corners)
+        vec4 positions[8] = {
+            vec4(-halfSize, -halfSize, -halfSize),
+            vec4(halfSize, -halfSize, -halfSize),
+            vec4(halfSize, halfSize, -halfSize),
+            vec4(-halfSize, halfSize, -halfSize),
+            vec4(-halfSize, -halfSize, halfSize),
+            vec4(halfSize, -halfSize, halfSize),
+            vec4(halfSize, halfSize, halfSize),
+            vec4(-halfSize, halfSize, halfSize)
+        };
+
+        // Define face normals
+        vec4 normals[6] = {
+            vec4(0, 0, -1, 0),
+            vec4(0, 0, 1, 0),
+            vec4(-1, 0, 0, 0),
+            vec4(1, 0, 0, 0),
+            vec4(0, -1, 0, 0),
+            vec4(0, 1, 0, 0)
+        };
+
+        // Add vertices and triangles for each face
+        int faceIndices[6][4] = {
+            {1, 0, 3, 2},
+            {4, 5, 6, 7},
+            {3, 0, 4, 7},
+            {5, 1, 2, 6},
+            {0, 1, 5, 4},
+            {2, 3, 7, 6}
+        };
+
+        for (int i = 0; i < 6; ++i) {
+            int v0 = faceIndices[i][0];
+            int v1 = faceIndices[i][1];
+            int v2 = faceIndices[i][2];
+            int v3 = faceIndices[i][3];
+
+            // Add vertices with their normals
+            mesh.addVertex(positions[v0], normals[i]);
+            mesh.addVertex(positions[v1], normals[i]);
+            mesh.addVertex(positions[v2], normals[i]);
+            mesh.addVertex(positions[v3], normals[i]);
+
+            // Add two triangles for the face
+            int baseIndex = i * 4;
+            mesh.addTriangle(baseIndex, baseIndex + 2, baseIndex + 1);
+            mesh.addTriangle(baseIndex, baseIndex + 3, baseIndex + 2);
+        }
+        return mesh;
+    } 
+
+    // Generate a sphere mesh
+    // Input Variables:
+    // - radius: Radius of the sphere
+    // - latitudeDivisions: Number of divisions along the latitude
+    // - longitudeDivisions: Number of divisions along the longitude
+    // Returns a Mesh object representing the sphere
+    static Mesh makeSphere(float radius, int latitudeDivisions, int longitudeDivisions) {
+        Mesh mesh;
+        if (latitudeDivisions < 2 || longitudeDivisions < 3) {
+            throw std::invalid_argument("Latitude divisions must be >= 2 and longitude divisions >= 3");
+        }
+
+        mesh.vertices.clear();
+        mesh.triangles.clear();
+
+        // Create vertices
+        for (int lat = 0; lat <= latitudeDivisions; ++lat) {
+            float theta = M_PI * lat / latitudeDivisions;
+            float sinTheta = std::sin(theta);
+            float cosTheta = std::cos(theta);
+
+            for (int lon = 0; lon <= longitudeDivisions; ++lon) {
+                float phi = 2 * M_PI * lon / longitudeDivisions;
+                float sinPhi = std::sin(phi);
+                float cosPhi = std::cos(phi);
+
+                vec4 position(
+                    radius * sinTheta * cosPhi,
+                    radius * sinTheta * sinPhi,
+                    radius * cosTheta,
+                    1.0f
+                );
+
+                vec4 normal = position;
+                normal.normalise();
+                normal[3] = 0.f;
+
+                mesh.addVertex(position, normal);
+            }
+        }
+
+        // Create indices for triangles
+        for (int lat = 0; lat < latitudeDivisions; ++lat) {
+            for (int lon = 0; lon < longitudeDivisions; ++lon) {
+                int v0 = lat * (longitudeDivisions + 1) + lon;
+                int v1 = v0 + 1;
+                int v2 = (lat + 1) * (longitudeDivisions + 1) + lon;
+                int v3 = v2 + 1;
+
+                mesh.addTriangle(v0, v1, v2);
+                mesh.addTriangle(v1, v3, v2);
+            }
+        }
+        return mesh;
+    }
+
+#if OPT_FRUSTUM_CULLING
+    private:
+        mutable bool boundsDirty = true;
+        mutable vec4 boundsCenter = vec4(0.f, 0.f, 0.f, 1.f);
+        mutable float boundsRadius = 0.0f;
+
+        void computeBounds() const {
+#if OPT_AVX_SIMD
+            const int count = verticesSOA.size();
+            if (count == 0) {
+                boundsCenter = vec4(0.f, 0.f, 0.f, 1.f);
+                boundsRadius = 0.0f;
+                boundsDirty = false;
+                return;
+            }
+
+            float minX = verticesSOA.p.x[0];
+            float minY = verticesSOA.p.y[0];
+            float minZ = verticesSOA.p.z[0];
+            float maxX = verticesSOA.p.x[0];
+            float maxY = verticesSOA.p.y[0];
+            float maxZ = verticesSOA.p.z[0];
+
+            for (int i = 1; i < count; ++i) {
+                minX = std::min(minX, verticesSOA.p.x[i]);
+                minY = std::min(minY, verticesSOA.p.y[i]);
+                minZ = std::min(minZ, verticesSOA.p.z[i]);
+                maxX = std::max(maxX, verticesSOA.p.x[i]);
+                maxY = std::max(maxY, verticesSOA.p.y[i]);
+                maxZ = std::max(maxZ, verticesSOA.p.z[i]);
+            }
+#else
+            if (vertices.empty()) {
+                boundsCenter = vec4(0.f, 0.f, 0.f, 1.f);
+                boundsRadius = 0.0f;
+                boundsDirty = false;
+                return;
+            }
+
+            float minX = vertices[0].p[0];
+            float minY = vertices[0].p[1];
+            float minZ = vertices[0].p[2];
+            float maxX = vertices[0].p[0];
+            float maxY = vertices[0].p[1];
+            float maxZ = vertices[0].p[2];
+
+            for (size_t i = 1; i < vertices.size(); ++i) {
+                minX = std::min(minX, vertices[i].p[0]);
+                minY = std::min(minY, vertices[i].p[1]);
+                minZ = std::min(minZ, vertices[i].p[2]);
+                maxX = std::max(maxX, vertices[i].p[0]);
+                maxY = std::max(maxY, vertices[i].p[1]);
+                maxZ = std::max(maxZ, vertices[i].p[2]);
+            }
+#endif
+
+            boundsCenter = vec4((minX + maxX) * 0.5f, (minY + maxY) * 0.5f, (minZ + maxZ) * 0.5f, 1.f);
+            float dx = maxX - boundsCenter[0];
+            float dy = maxY - boundsCenter[1];
+            float dz = maxZ - boundsCenter[2];
+            boundsRadius = std::sqrt(dx * dx + dy * dy + dz * dz);
+            boundsDirty = false;
+        }
+#endif
+};

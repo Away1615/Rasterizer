@@ -1,0 +1,63 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Core">
+      <UniqueIdentifier>{c7f1b688-8559-405b-a399-2e8a37f9e7be}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Math">
+      <UniqueIdentifier>{94ad5510-82f4-478f-99b4-9930e86fccbf}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Geometry">
+      <UniqueIdentifier>{b26a23ad-e054-4475-b44b-d636947e85df}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Buffers">
+      <UniqueIdentifier>{d61f184f-a95b-4c02-bdd4-32a1cfec6526}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Lighting">
+      <UniqueIdentifier>{0554d321-63e6-4893-99a2-a79676709d0c}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Third Party">
+      <UniqueIdentifier>{9c273619-dfaa-4cae-95f6-86ce8cdc8b13}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="renderer.h">
+      <Filter>Core</Filter>
+    </ClInclude>
+    <ClInclude Include="colour.h">
+      <Filter>Math</Filter>
+    </ClInclude>
+    <ClInclude Include="matrix.h">
+      <Filter>Math</Filter>
+    </ClInclude>
+    <ClInclude Include="vec4.h">
+      <Filter>Math</Filter>
+    </ClInclude>
+    <ClInclude Include="mesh.h">
+      <Filter>Geometry</Filter>
+    </ClInclude>
+    <ClInclude Include="triangle.h">
+      <Filter>Geometry</Filter>
+    </ClInclude>
+    <ClInclude Include="GamesEngineeringBase.h">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+    <ClInclude Include="RNG.h">
+      <Filter>Third Party</Filter>
+    </ClInclude>
+    <ClInclude Include="light.h">
+      <Filter>Lighting</Filter>
+    </ClInclude>
+    <ClInclude Include="zbuffer.h">
+      <Filter>Buffers</Filter>
+    </ClInclude>
+    <ClInclude Include="Macros.h" />
+    <ClInclude Include="Profiler.h" />
+    <ClInclude Include="AVX_SOA.h" />
+    <ClInclude Include="EdgeFunction.h" />
+    <ClInclude Include="ThreadPool.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="raster.cpp" />
+  </ItemGroup>
+</Project>
